@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "IFC2GRAPH Web App",
+      "runtimeExecutable": "C:\\Users\\sgcortes\\AppData\\Local\\Programs\\OSGeo4W\\apps\\Python312\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", "8000", "--reload"],
+      "cwd": "G:\\Mi unidad\\Colab Notebooks\\2026-IFC2GRAPH\\webapp",
+      "port": 8000
+    }
+  ]
+}
