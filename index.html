@@ -7,7 +7,7 @@
 <!-- Plotly -->
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
 <!-- web-ifc (IFC parser en WebAssembly — sin servidor) -->
-<script src="https://unpkg.com/web-ifc@0.0.57/web-ifc-api-iife.js"></script>
+<script src="web-ifc-api-iife.js"></script>
 <!-- Lógica BIM -->
 <script src="bim_mapper.js"></script>
 <style>
@@ -328,7 +328,7 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
   try {
     // Inicializar web-ifc (WebAssembly)
     const ifcApi = new WebIFC.IfcAPI();
-    ifcApi.SetWasmPath('https://unpkg.com/web-ifc@0.0.57/');
+    ifcApi.SetWasmPath('./');
     await ifcApi.Init();
 
     setLoading(true, 'Leyendo archivo…');
