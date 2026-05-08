@@ -1,6 +1,0 @@
-fastapi
-uvicorn[standard]
-ifcopenshell
-networkx
-shapely
-python-multipart
