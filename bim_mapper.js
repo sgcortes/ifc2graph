@@ -291,16 +291,19 @@ class BIMAccessibilityMapper {
   // ═══════════════════════════════════════════════════════
   // FLOOR PLAN OUTLINE
   // ═══════════════════════════════════════════════════════
+  // Devuelve los 4 segmentos del rectángulo orientado (OBB) de la base del muro.
+  // Usar el OBB en lugar de todos los vértices evita líneas internas de la
+  // triangulación del mesh y funciona con muros a cualquier ángulo.
   _lowEdges(eid) {
     const verts = this.getElementVertices(eid);
     if (!verts.length) return [];
-    const zs   = verts.map(v => v[2]);
-    const minZ  = Math.min(...zs), maxZ = Math.max(...zs);
-    // Tolerancia adaptativa: 5 % de la altura del elemento, mínimo 10 cm
-    const zTol  = Math.max((maxZ - minZ) * 0.05, 0.10);
-    const low   = verts.filter(v => v[2] <= minZ + zTol).map(v => [v[0], v[1]]);
+    const zs  = verts.map(v => v[2]);
+    const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+    // Tolerancia Z adaptativa: 5 % de la altura, mínimo 10 cm
+    const zTol = Math.max((maxZ - minZ) * 0.05, 0.10);
+    const low  = verts.filter(v => v[2] <= minZ + zTol).map(v => [v[0], v[1]]);
 
-    // Deduplicar con precisión 1 cm
+    // Deduplicar a 1 cm de precisión
     const seen = new Set(), uniq = [];
     for (const p of low) {
       const k = `${p[0].toFixed(2)},${p[1].toFixed(2)}`;
@@ -308,20 +311,37 @@ class BIMAccessibilityMapper {
     }
     if (uniq.length < 2) return [];
 
-    // Ordenar por ángulo alrededor del centroide → polígono correcto
-    // independientemente del orden en que lleguen los triángulos del mesh
-    if (uniq.length > 2) {
-      const cx = uniq.reduce((s,p) => s+p[0], 0) / uniq.length;
-      const cy = uniq.reduce((s,p) => s+p[1], 0) / uniq.length;
-      uniq.sort((a,b) => Math.atan2(a[1]-cy, a[0]-cx) - Math.atan2(b[1]-cy, b[0]-cx));
-    }
+    // Eje principal del muro por PCA
+    const axis = this._principalAxis(uniq) || [1, 0];
+    const perp = [-axis[1], axis[0]];
 
-    const lines = [];
-    for (let i = 0; i < uniq.length - 1; i++)
-      if (this._d2d(uniq[i], uniq[i+1]) > 0.05) lines.push([uniq[i], uniq[i+1]]);
-    if (uniq.length > 2 && this._d2d(uniq[uniq.length-1], uniq[0]) > 0.05)
-      lines.push([uniq[uniq.length-1], uniq[0]]);
-    return lines;
+    // Centroide
+    const cx = uniq.reduce((s,p) => s+p[0], 0) / uniq.length;
+    const cy = uniq.reduce((s,p) => s+p[1], 0) / uniq.length;
+
+    // Proyección sobre eje principal y perpendicular
+    const u = uniq.map(p => (p[0]-cx)*axis[0] + (p[1]-cy)*axis[1]);
+    const v = uniq.map(p => (p[0]-cx)*perp[0] + (p[1]-cy)*perp[1]);
+    const uMin=Math.min(...u), uMax=Math.max(...u);
+    const vMin=Math.min(...v), vMax=Math.max(...v);
+
+    // OBB demasiado pequeño → ignorar
+    if (uMax-uMin < 0.05 && vMax-vMin < 0.05) return [];
+
+    // 4 esquinas del OBB en coordenadas del mundo
+    const C = (du, dv) => [
+      cx + du*axis[0] + dv*perp[0],
+      cy + du*axis[1] + dv*perp[1],
+    ];
+    const corners = [C(uMin,vMin), C(uMax,vMin), C(uMax,vMax), C(uMin,vMax)];
+
+    // 4 segmentos del rectángulo
+    return [
+      [corners[0], corners[1]],
+      [corners[1], corners[2]],
+      [corners[2], corners[3]],
+      [corners[3], corners[0]],
+    ].filter(([a,b]) => this._d2d(a,b) > 0.05);
   }
 
   _collectFloorplans() {
