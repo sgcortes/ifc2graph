@@ -30,6 +30,7 @@ class BIMAccessibilityMapper {
     this.modelID = this.ifcApi.OpenModel(new Uint8Array(buffer));
     this._extractStoreys();
     this._buildContainerIndex();
+    this._inferElevsIfNeeded();   // fallback when Elevation attr = 0 for all storeys
   }
 
   // ═══════════════════════════════════════════════════════
@@ -39,19 +40,16 @@ class BIMAccessibilityMapper {
     const ids = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCBUILDINGSTOREY);
     for (let i = 0; i < ids.size(); i++) {
       const id = ids.get(i);
-      // Use recursive=true so ObjectPlacement is fully resolved
       const st = this.ifcApi.GetLine(this.modelID, id, true);
       const name = this._sv(st.Name) || 'Nivel Desconocido';
       let elev = 0;
 
-      // 1st attempt: Elevation attribute
+      // ── Método 1: atributo Elevation ──────────────────────────────────
       try { elev = parseFloat(st.Elevation?.value ?? st.Elevation ?? 0) || 0; } catch (_) {}
 
-      // 2nd attempt: ObjectPlacement Z coordinate (works in web-ifc IIFE
-      // when Elevation attribute is not populated or returns 0)
+      // ── Método 2: ObjectPlacement resuelto por recursive GetLine ──────
       if (elev === 0) {
         try {
-          // RelativePlacement may be directly on ObjectPlacement or nested
           const rp = st.ObjectPlacement?.RelativePlacement
                   ?? st.ObjectPlacement?.PlacementRelTo?.RelativePlacement;
           if (rp) {
@@ -64,6 +62,34 @@ class BIMAccessibilityMapper {
         } catch (_) {}
       }
 
+      // ── Método 3: traversal manual de referencias (expresIDs) ─────────
+      // Necesario cuando GetLine(recursive) no resuelve ObjectPlacement
+      // en la build IIFE de web-ifc
+      if (elev === 0) {
+        try {
+          const stRaw = this.ifcApi.GetLine(this.modelID, id, false);
+          const opRef = stRaw.ObjectPlacement?.value ?? stRaw.ObjectPlacement;
+          if (typeof opRef === 'number') {
+            const lp = this.ifcApi.GetLine(this.modelID, opRef, false);
+            const rpRef = lp.RelativePlacement?.value ?? lp.RelativePlacement;
+            if (typeof rpRef === 'number') {
+              const ap = this.ifcApi.GetLine(this.modelID, rpRef, false);
+              const locRef = ap.Location?.value ?? ap.Location;
+              if (typeof locRef === 'number') {
+                const cp = this.ifcApi.GetLine(this.modelID, locRef, false);
+                const coords = cp.Coordinates;
+                if (Array.isArray(coords) && coords.length >= 3) {
+                  const z = parseFloat(coords[2]?.value ?? coords[2]);
+                  if (!isNaN(z) && z !== 0) elev = z;
+                }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Debug: loguear cada planta para diagnóstico en consola del navegador
+      console.log(`[Storey] "${name}" id=${id}  Elevation=${JSON.stringify(st.Elevation)}  elev_final=${elev}`);
       this.storeyElevByName[name] = elev;
     }
     if (!Object.keys(this.storeyElevByName).length)
@@ -71,13 +97,92 @@ class BIMAccessibilityMapper {
     this._sortedStoreys = Object.entries(this.storeyElevByName)
       .map(([name, elev]) => ({ name, elev }))
       .sort((a, b) => a.elev - b.elev);
-    console.log('[BIMMapper] Plantas detectadas:', this._sortedStoreys.map(s => `${s.name}=${s.elev}m`).join(', '));
+    console.log('[BIMMapper] Plantas (tras _extractStoreys):',
+      this._sortedStoreys.map(s => `${s.name}=${s.elev}m`).join(', '));
+  }
+
+  // ─── Fallback: inferir cotas cuando _extractStoreys obtiene todas a 0 ───────
+  _inferElevsIfNeeded() {
+    const allSame = this._sortedStoreys.length < 2 ||
+      this._sortedStoreys.every(s => s.elev === this._sortedStoreys[0].elev);
+    if (!allSame) return;   // las cotas ya son distintas → no hacer nada
+
+    console.log('[BIMMapper] Todas las cotas iguales, intentando inferir…');
+
+    // ── Método A: mínimo Z de la geometría de los espacios ────────────────
+    const buckets = {};
+    try {
+      const spIds = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCSPACE);
+      for (let i = 0; i < spIds.size(); i++) {
+        const eid = spIds.get(i);
+        const stName = this._containerOf.get(eid);
+        if (!stName) continue;
+        const verts = this.getElementVertices(eid);
+        if (!verts.length) continue;
+        const minZ = Math.min(...verts.map(v => v[2]));
+        if (!buckets[stName]) buckets[stName] = [];
+        buckets[stName].push(minZ);
+      }
+    } catch (_) {}
+
+    const allZ = Object.values(buckets).flat();
+    const geomSpread = allZ.length >= 2
+      ? Math.max(...allZ) - Math.min(...allZ) : 0;
+
+    if (geomSpread > 0.5) {
+      // Geometría tiene dispersión Z útil → usarla como cota de planta
+      for (const [name, vals] of Object.entries(buckets)) {
+        vals.sort((a, b) => a - b);
+        this.storeyElevByName[name] = vals[Math.max(0, Math.floor(vals.length * 0.10))];
+      }
+      console.log('[BIMMapper] Cotas inferidas desde geometría:',
+        JSON.stringify(this.storeyElevByName));
+    } else {
+      // ── Método B: alturas secuenciales basadas en el orden de la lista ──
+      // El orden de inserción en _extractStoreys es generalmente de abajo a arriba.
+      // Intentamos deducir la altura típica de planta a partir de escaleras.
+      let floorH = 3.5;
+      try {
+        const stairIds = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCSTAIRFLIGHT);
+        for (let i = 0; i < stairIds.size(); i++) {
+          const v = this.getElementVertices(stairIds.get(i));
+          if (!v.length) continue;
+          const h = Math.max(...v.map(p => p[2])) - Math.min(...v.map(p => p[2]));
+          if (h >= 2.0 && h <= 6.0) { floorH = h; break; }
+        }
+      } catch (_) {}
+
+      // Calcular cota de partida: el primer piso se queda en 0 salvo que
+      // haya un piso negativo (sótano) en el nombre
+      let startIdx = 0;
+      const names = this._sortedStoreys.map(s => s.name.toUpperCase());
+      // Detectar si el primer piso es un sótano/nivel negativo por nombre
+      const basementKW = ['-1','-2','SOTANO','SÓTANO','BASEMENT','KELLERGESCHOSS',
+                          'SOUTERRAIN','SOTERRANI','UNDERGROUND'];
+      for (let i = 0; i < names.length; i++) {
+        if (!basementKW.some(k => names[i].includes(k))) { startIdx = i; break; }
+      }
+      // Asignar: pisos por debajo del "0" tienen cota negativa
+      this._sortedStoreys.forEach((s, i) => {
+        this.storeyElevByName[s.name] = (i - startIdx) * floorH;
+      });
+      console.log(`[BIMMapper] Cotas secuenciales (floorH=${floorH.toFixed(2)}, startIdx=${startIdx}):`,
+        this._sortedStoreys.map(s => `${s.name}=${this.storeyElevByName[s.name].toFixed(1)}m`).join(', '));
+    }
+
+    // Actualizar lista ordenada
+    this._sortedStoreys = Object.entries(this.storeyElevByName)
+      .map(([name, elev]) => ({ name, elev }))
+      .sort((a, b) => a.elev - b.elev);
+    console.log('[BIMMapper] Plantas definitivas:',
+      this._sortedStoreys.map(s => `${s.name}=${s.elev.toFixed(2)}m`).join(', '));
   }
 
   // ═══════════════════════════════════════════════════════
   // CONTAINER INDEX  (element → storey name)
   // ═══════════════════════════════════════════════════════
   _buildContainerIndex() {
+    // ── Método 1: IfcRelContainedInSpatialStructure ───────────────────────
     try {
       const rels = this.ifcApi.GetLineIDsWithType(
         this.modelID, WebIFC.IFCRELCONTAINEDINSPATIALSTRUCTURE
@@ -100,6 +205,38 @@ class BIMAccessibilityMapper {
         }
       }
     } catch (_) {}
+
+    // ── Método 2: IfcRelAggregates (algunos modelos usan esto en lugar de ─
+    //             IfcRelContainedInSpatialStructure para espacios y puertas)
+    try {
+      const rels = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCRELAGGREGATES);
+      for (let i = 0; i < rels.size(); i++) {
+        const rel = this.ifcApi.GetLine(this.modelID, rels.get(i), true);
+        const stId = rel.RelatingObject?.value ?? rel.RelatingObject;
+        let stName = null;
+        try {
+          if (this.ifcApi.GetLineType(this.modelID, stId) === WebIFC.IFCBUILDINGSTOREY) {
+            const st = this.ifcApi.GetLine(this.modelID, stId);
+            stName = this._sv(st.Name) || 'Nivel Desconocido';
+          }
+        } catch (_) {}
+        if (!stName) continue;
+        const items = rel.RelatedObjects;
+        for (const item of (Array.isArray(items) ? items : [items])) {
+          const eid = item?.value ?? item;
+          // No sobreescribir mapeos del método 1
+          if (eid != null && !this._containerOf.has(eid))
+            this._containerOf.set(eid, stName);
+        }
+      }
+    } catch (_) {}
+
+    console.log(`[BIMMapper] _containerOf: ${this._containerOf.size} elementos mapeados a planta`);
+    // Muestra un resumen: cuántos elementos por planta
+    const countByStorey = {};
+    for (const name of this._containerOf.values())
+      countByStorey[name] = (countByStorey[name] || 0) + 1;
+    console.log('[BIMMapper] Elementos por planta:', JSON.stringify(countByStorey));
   }
 
   // ═══════════════════════════════════════════════════════
