@@ -39,10 +39,31 @@ class BIMAccessibilityMapper {
     const ids = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCBUILDINGSTOREY);
     for (let i = 0; i < ids.size(); i++) {
       const id = ids.get(i);
-      const st = this.ifcApi.GetLine(this.modelID, id);
+      // Use recursive=true so ObjectPlacement is fully resolved
+      const st = this.ifcApi.GetLine(this.modelID, id, true);
       const name = this._sv(st.Name) || 'Nivel Desconocido';
       let elev = 0;
+
+      // 1st attempt: Elevation attribute
       try { elev = parseFloat(st.Elevation?.value ?? st.Elevation ?? 0) || 0; } catch (_) {}
+
+      // 2nd attempt: ObjectPlacement Z coordinate (works in web-ifc IIFE
+      // when Elevation attribute is not populated or returns 0)
+      if (elev === 0) {
+        try {
+          // RelativePlacement may be directly on ObjectPlacement or nested
+          const rp = st.ObjectPlacement?.RelativePlacement
+                  ?? st.ObjectPlacement?.PlacementRelTo?.RelativePlacement;
+          if (rp) {
+            const loc = rp.Location?.Coordinates ?? rp.Location;
+            if (Array.isArray(loc) && loc.length >= 3) {
+              const z = parseFloat(loc[2]?.value ?? loc[2]);
+              if (!isNaN(z) && z !== 0) elev = z;
+            }
+          }
+        } catch (_) {}
+      }
+
       this.storeyElevByName[name] = elev;
     }
     if (!Object.keys(this.storeyElevByName).length)
@@ -50,6 +71,7 @@ class BIMAccessibilityMapper {
     this._sortedStoreys = Object.entries(this.storeyElevByName)
       .map(([name, elev]) => ({ name, elev }))
       .sort((a, b) => a.elev - b.elev);
+    console.log('[BIMMapper] Plantas detectadas:', this._sortedStoreys.map(s => `${s.name}=${s.elev}m`).join(', '));
   }
 
   // ═══════════════════════════════════════════════════════
@@ -454,7 +476,8 @@ class BIMAccessibilityMapper {
       const sp  = this.ifcApi.GetLine(this.modelID, eid);
       const { centroid, bbox } = this.getElementCentroidAndBbox(eid);
       if (!centroid) continue;
-      const { name: lvl, elev: fz } = this.snapZToLevel(bbox[2]);
+      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[2]).name;
+      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[2]).elev;
       const id = String(eid);
       this._addNode(id, { name: this._sv(sp.Name)||'Estancia', type:'Habitacion', level:lvl, x:centroid[0], y:centroid[1], z:fz, accessible:true });
       const info = { id, bbox, bbox2d:[bbox[0],bbox[1],bbox[3],bbox[4]], level:lvl };
@@ -473,7 +496,8 @@ class BIMAccessibilityMapper {
       if (!centroid) continue;
       if (bbox[3]-bbox[0]>10 && bbox[4]-bbox[1]>10) continue;
       if (this._spacesData.some(s => this._checkProx(centroid, s.bbox, 0.1))) continue;
-      const { name: lvl, elev: fz } = this.snapZToLevel(bbox[2]);
+      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[2]).name;
+      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[2]).elev;
       const id = String(eid);
       this._addNode(id, { name:this._sv(slab.Name)||'Suelo/Pasillo', type:'Suelo', level:lvl, x:centroid[0], y:centroid[1], z:fz, accessible:true });
       const info = { id, bbox, bbox2d:[bbox[0],bbox[1],bbox[3],bbox[4]], level:lvl };
@@ -489,7 +513,8 @@ class BIMAccessibilityMapper {
       const door = this.ifcApi.GetLine(this.modelID, eid);
       const { centroid, bbox } = this.getElementCentroidAndBbox(eid);
       if (!centroid) continue;
-      const { name: lvl, elev: fz } = this.snapZToLevel(bbox[2]);
+      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[2]).name;
+      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[2]).elev;
       const width = this._fv(door.OverallWidth);
       const acc   = width > 0 ? width >= 0.85 : true;
       const { axis, normal } = this._doorFrame(eid);
@@ -618,7 +643,11 @@ class BIMAccessibilityMapper {
         const zs=v.map(p=>p[2]); const mnZ=Math.min(...zs),mxZ=Math.max(...zs);
         if(mxZ-mnZ<0.15) continue;
         const iS=zs.indexOf(mnZ),iE=zs.indexOf(mxZ);
-        const {name:lvS}=this.snapZToLevel(mnZ),{name:lvE}=this.snapZToLevel(mxZ);
+        const contained = this._containerOf.get(eid);
+        const lvS = contained || this.snapZToLevel(mnZ).name;
+        const sIdx = this._sortedStoreys.findIndex(s => s.name === lvS);
+        const lvE = contained && sIdx >= 0 && sIdx+1 < this._sortedStoreys.length
+          ? this._sortedStoreys[sIdx+1].name : this.snapZToLevel(mxZ).name;
         // Usar Z real de la geometría para mostrar pendiente correcta en 3D
         const fzS=mnZ, fzE=mxZ;
         const idS=`${eid}_START`,idE=`${eid}_END`;
