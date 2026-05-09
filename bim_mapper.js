@@ -517,7 +517,7 @@ class BIMAccessibilityMapper {
       if (processed.has(eid)) continue;
       const v = this.getElementVertices(eid);
       if (!v.length) continue;
-      const zs = v.map(p => p[2]);
+      const zs   = v.map(p => p[2]);
       const minZ = Math.min(...zs), maxZ = Math.max(...zs);
       const tolZ = Math.max((maxZ-minZ)*0.15, 0.1);
       const bot  = v.filter(p => p[2] <= minZ+tolZ);
@@ -526,8 +526,28 @@ class BIMAccessibilityMapper {
       const cyS  = bot.length ? bot.reduce((s,p)=>s+p[1],0)/bot.length : v[zs.indexOf(minZ)][1];
       const cxE  = top.length ? top.reduce((s,p)=>s+p[0],0)/top.length : v[zs.indexOf(maxZ)][0];
       const cyE  = top.length ? top.reduce((s,p)=>s+p[1],0)/top.length : v[zs.indexOf(maxZ)][1];
-      const { name:lvlS, elev:fzS } = this.snapZToLevel(minZ);
-      const { name:lvlE, elev:fzE } = this.snapZToLevel(maxZ);
+
+      // Determinar pisos de inicio y fin
+      let { name:lvlS } = this.snapZToLevel(minZ);
+      let { name:lvlE } = this.snapZToLevel(maxZ);
+
+      // Si la geometría extraída es demasiado plana (fallo de extracción),
+      // el tramo conecta el piso contenedor con el siguiente piso de la jerarquía
+      const geomHeight = maxZ - minZ;
+      if (geomHeight < 0.5 || lvlS === lvlE) {
+        const contained = this._containerOf.get(eid);
+        if (contained) lvlS = contained;
+        const sIdx = this._sortedStoreys.findIndex(s => s.name === lvlS);
+        if (sIdx >= 0 && sIdx + 1 < this._sortedStoreys.length)
+          lvlE = this._sortedStoreys[sIdx + 1].name;
+      }
+
+      // Usar la Z real de la geometría para la posición 3D (no la cota del piso)
+      // para que la escalera muestre correctamente la pendiente en el grafo 3D.
+      // Si la altura es degenerada, usar las cotas de los pisos detectados.
+      const fzS = geomHeight >= 0.5 ? minZ : (this.storeyElevByName[lvlS] ?? minZ);
+      const fzE = geomHeight >= 0.5 ? maxZ : (this.storeyElevByName[lvlE] ?? fzS + 3);
+
       const idS = `${eid}_START`, idE = `${eid}_END`;
       this._addNode(idS, { name:'Escalera Inicio', type:'Escalera', level:lvlS, x:cxS, y:cyS, z:fzS, accessible:false });
       this._addNode(idE, { name:'Escalera Fin',   type:'Escalera', level:lvlE, x:cxE, y:cyE, z:fzE, accessible:false });
@@ -598,7 +618,9 @@ class BIMAccessibilityMapper {
         const zs=v.map(p=>p[2]); const mnZ=Math.min(...zs),mxZ=Math.max(...zs);
         if(mxZ-mnZ<0.15) continue;
         const iS=zs.indexOf(mnZ),iE=zs.indexOf(mxZ);
-        const {name:lvS,elev:fzS}=this.snapZToLevel(mnZ),{name:lvE,elev:fzE}=this.snapZToLevel(mxZ);
+        const {name:lvS}=this.snapZToLevel(mnZ),{name:lvE}=this.snapZToLevel(mxZ);
+        // Usar Z real de la geometría para mostrar pendiente correcta en 3D
+        const fzS=mnZ, fzE=mxZ;
         const idS=`${eid}_START`,idE=`${eid}_END`;
         this._addNode(idS,{name:'Rampa Inicio',type:'Rampa',level:lvS,x:v[iS][0],y:v[iS][1],z:fzS,accessible:true});
         this._addNode(idE,{name:'Rampa Fin',  type:'Rampa',level:lvE,x:v[iE][0],y:v[iE][1],z:fzE,accessible:true});
