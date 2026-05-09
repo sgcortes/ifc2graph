@@ -754,9 +754,13 @@ class BIMAccessibilityMapper {
       const minZ     = Math.min(...zs), maxZ = Math.max(...zs);
       const geomHeight = maxZ - minZ;
 
-      // Centroide XY de todo el tramo (no dividido por altura)
-      const cx = v.reduce((s, p) => s + p[0], 0) / v.length;
-      const cy = v.reduce((s, p) => s + p[1], 0) / v.length;
+      // Centroide XY: usar solo vértices del 25% inferior (base del tramo)
+      // para evitar que barandas/alzadas desplacen el centroide en XY.
+      const zCut = minZ + Math.max(geomHeight * 0.25, 0.30);
+      const lowV = v.filter(p => p[2] <= zCut);
+      const useV = lowV.length >= 3 ? lowV : v;
+      const cx = useV.reduce((s, p) => s + p[0], 0) / useV.length;
+      const cy = useV.reduce((s, p) => s + p[1], 0) / useV.length;
 
       // Asignación de niveles: mapa pre-calculado → _containerOf → snapZToLevel
       let lvlS, lvlE;
