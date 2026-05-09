@@ -109,6 +109,27 @@ class BIMAccessibilityMapper {
         }
       });
     } catch (_) {}
+
+    // Fallback: si StreamMeshes no devuelve vértices, leer la colocación
+    // directamente desde la entidad IFC (da al menos el punto de inserción)
+    if (all.length === 0) {
+      try {
+        const el  = this.ifcApi.GetLine(this.modelID, eid, true);
+        const pl  = el?.ObjectPlacement?.RelativePlacement
+                 ?? el?.ObjectPlacement?.PlacementRelTo?.RelativePlacement;
+        if (pl) {
+          const loc = pl.Location?.Coordinates ?? pl.Location;
+          if (Array.isArray(loc) && loc.length >= 2) {
+            const x = parseFloat(loc[0]?.value ?? loc[0]) || 0;
+            const y = parseFloat(loc[1]?.value ?? loc[1]) || 0;
+            const z = parseFloat(loc[2]?.value ?? loc[2]) || 0;
+            // Insertar un bbox mínimo (1 cm) para que el centroide sea correcto
+            all.push([x-0.005,y-0.005,z], [x+0.005,y+0.005,z+0.005]);
+          }
+        }
+      } catch (_) {}
+    }
+
     this._geomCache.set(eid, all);
     return all;
   }
@@ -273,18 +294,32 @@ class BIMAccessibilityMapper {
   _lowEdges(eid) {
     const verts = this.getElementVertices(eid);
     if (!verts.length) return [];
-    const minZ = Math.min(...verts.map(v => v[2]));
-    const low  = verts.filter(v => v[2] <= minZ + 0.25).map(v => [v[0], v[1]]);
-    const uniq = [], seen = new Set();
+    const zs   = verts.map(v => v[2]);
+    const minZ  = Math.min(...zs), maxZ = Math.max(...zs);
+    // Tolerancia adaptativa: 5 % de la altura del elemento, mínimo 10 cm
+    const zTol  = Math.max((maxZ - minZ) * 0.05, 0.10);
+    const low   = verts.filter(v => v[2] <= minZ + zTol).map(v => [v[0], v[1]]);
+
+    // Deduplicar con precisión 1 cm
+    const seen = new Set(), uniq = [];
     for (const p of low) {
-      const k = `${p[0].toFixed(3)},${p[1].toFixed(3)}`;
+      const k = `${p[0].toFixed(2)},${p[1].toFixed(2)}`;
       if (!seen.has(k)) { seen.add(k); uniq.push(p); }
     }
     if (uniq.length < 2) return [];
+
+    // Ordenar por ángulo alrededor del centroide → polígono correcto
+    // independientemente del orden en que lleguen los triángulos del mesh
+    if (uniq.length > 2) {
+      const cx = uniq.reduce((s,p) => s+p[0], 0) / uniq.length;
+      const cy = uniq.reduce((s,p) => s+p[1], 0) / uniq.length;
+      uniq.sort((a,b) => Math.atan2(a[1]-cy, a[0]-cx) - Math.atan2(b[1]-cy, b[0]-cx));
+    }
+
     const lines = [];
     for (let i = 0; i < uniq.length - 1; i++)
-      if (this._d2d(uniq[i], uniq[i+1]) > 0.2) lines.push([uniq[i], uniq[i+1]]);
-    if (uniq.length > 2 && this._d2d(uniq[uniq.length-1], uniq[0]) > 0.2)
+      if (this._d2d(uniq[i], uniq[i+1]) > 0.05) lines.push([uniq[i], uniq[i+1]]);
+    if (uniq.length > 2 && this._d2d(uniq[uniq.length-1], uniq[0]) > 0.05)
       lines.push([uniq[uniq.length-1], uniq[0]]);
     return lines;
   }
