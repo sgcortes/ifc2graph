@@ -357,6 +357,18 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
       initialFloorplanRange: null,
     });
 
+    // Diagnóstico: posición media de nodos por planta
+    // (ayuda a detectar si las coords XY se desplazan entre pisos)
+    const _dbg = {};
+    for (const n of data.nodes) {
+      if (!_dbg[n.level]) _dbg[n.level] = { xs:[], ys:[], zs:[] };
+      _dbg[n.level].xs.push(n.x); _dbg[n.level].ys.push(n.y); _dbg[n.level].zs.push(n.z);
+    }
+    for (const [lvl, d] of Object.entries(_dbg)) {
+      const avg = a => (a.reduce((s,v)=>s+v,0)/a.length).toFixed(2);
+      console.log(`[Nodos] ${lvl}: n=${d.xs.length} meanX=${avg(d.xs)} meanY=${avg(d.ys)} meanZ=${avg(d.zs)}`);
+    }
+
     initUI();
     renderFloorplan();
     renderGraph3D();
@@ -619,8 +631,13 @@ function renderGraph3D() {
       xaxis:{title:'X',showbackground:false,gridcolor:'#e5e7eb'},
       yaxis:{title:'Y',showbackground:false,gridcolor:'#e5e7eb'},
       zaxis:{title:'Z (m)',showbackground:false,gridcolor:'#e5e7eb'},
-      aspectmode:'data',
-      camera: _g3dCam || { projection:{type:'orthographic'} },
+      aspectmode:'manual',
+      aspectratio:{ x:1, y:1, z:1.5 },   // exagera eje Z para ver plantas separadas
+      camera: _g3dCam || {
+        eye:{ x:1.6, y:0.4, z:0.5 },     // vista lateral-frontal, enfatiza altura
+        up:{ x:0, y:0, z:1 },
+        projection:{ type:'orthographic' }
+      },
     },
     paper_bgcolor:'white',
     legend:{x:1.0,y:1,xanchor:'left',font:{size:10},bgcolor:'rgba(255,255,255,0.9)'},
