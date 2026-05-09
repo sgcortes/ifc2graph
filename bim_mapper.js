@@ -321,9 +321,9 @@ class BIMAccessibilityMapper {
   elementStoreyName(eid) {
     if (this._containerOf.has(eid)) return this._containerOf.get(eid);
     const { centroid, bbox } = this.getElementCentroidAndBbox(eid);
-    // Y-up model: IFC Y = elevation, use bbox[1] (minY) for level snap
-    if (bbox)     return this.snapZToLevel(bbox[1]).name;
-    if (centroid) return this.snapZToLevel(centroid[1]).name;
+    // Z-up model: IFC Z = elevation, use bbox[2] (minZ) for level snap
+    if (bbox)     return this.snapZToLevel(bbox[2]).name;
+    if (centroid) return this.snapZToLevel(centroid[2]).name;
     return 'Nivel Desconocido';
   }
 
@@ -376,12 +376,12 @@ class BIMAccessibilityMapper {
   // ═══════════════════════════════════════════════════════
   _doorFrame(eid) {
     const v = this.getElementVertices(eid);
-    const ys = v.map(p => p[1]);   // IFC Y = elevation
-    if (!ys.length) return { axis: [1, 0], normal: [0, 1] };
-    const minY = Math.min(...ys);
-    // Use X and Z (horizontal axes in Y-up model) for door orientation
-    const low  = v.filter(p => p[1] <= minY + 0.4).map(p => [p[0], p[2]]);
-    const axis = this._principalAxis(low.length >= 2 ? low : v.map(p => [p[0], p[2]])) || [1, 0];
+    const zs = v.map(p => p[2]);   // IFC Z = elevation
+    if (!zs.length) return { axis: [1, 0], normal: [0, 1] };
+    const minZ = Math.min(...zs);
+    // Use X and Y (horizontal axes in Z-up model) for door orientation
+    const low  = v.filter(p => p[2] <= minZ + 0.4).map(p => [p[0], p[1]]);
+    const axis = this._principalAxis(low.length >= 2 ? low : v.map(p => [p[0], p[1]])) || [1, 0];
     return { axis, normal: [-axis[1], axis[0]] };
   }
 
@@ -462,12 +462,12 @@ class BIMAccessibilityMapper {
   _lowEdges(eid) {
     const verts = this.getElementVertices(eid);
     if (!verts.length) return [];
-    // Y-up model: IFC Y = elevation. Filter base vertices (lowest Y = floor level).
-    // Use X and Z (the two horizontal axes) for the 2D floor plan outline.
-    const ys  = verts.map(v => v[1]);
-    const minY = Math.min(...ys), maxY = Math.max(...ys);
-    const yTol = Math.max((maxY - minY) * 0.05, 0.10);
-    const low  = verts.filter(v => v[1] <= minY + yTol).map(v => [v[0], v[2]]);
+    // Z-up model: IFC Z = elevation. Filter base vertices (lowest Z = floor level).
+    // Use X and Y (the two horizontal axes) for the 2D floor plan outline.
+    const zs  = verts.map(v => v[2]);
+    const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+    const yTol = Math.max((maxZ - minZ) * 0.05, 0.10);
+    const low  = verts.filter(v => v[2] <= minZ + yTol).map(v => [v[0], v[1]]);
 
     // Deduplicar a 1 cm de precisión
     const seen = new Set(), uniq = [];
@@ -570,10 +570,10 @@ class BIMAccessibilityMapper {
 
       const { centroid, bbox } = this.getElementCentroidAndBbox(eid);
       if (!bbox) continue;
-      // Y-up: horizontal extents are X (0→3) and Z (2→5); Y (1→4) is vertical (height)
-      const dx = bbox[3]-bbox[0], dy = bbox[5]-bbox[2], dz = bbox[4]-bbox[1];
+      // Z-up: horizontal extents are X (0→3) and Y (1→4); Z (2→5) is vertical (height)
+      const dx = bbox[3]-bbox[0], dy = bbox[4]-bbox[1], dz = bbox[5]-bbox[2];
       const touched = this._sortedStoreys
-        .filter(st => bbox[1]-0.5 <= st.elev && st.elev <= bbox[4]+0.5)
+        .filter(st => bbox[2]-0.5 <= st.elev && st.elev <= bbox[5]+0.5)
         .map(st => st.name);
       const [mnXY, mxXY, mnDZ] = sem ? [0.6, 8, 1] : [0.8, 6, 2.2];
       if (!(mnXY<=dx && dx<=mxXY && mnXY<=dy && dy<=mxXY) || dz<mnDZ || !touched.length) continue;
@@ -584,7 +584,7 @@ class BIMAccessibilityMapper {
         ).length;
         if (sem || dh >= 1) good.push({ eid, centroid, bbox, levels: touched });
       } else if (sem) {
-        singles.push({ eid, cx: centroid[0], cy: centroid[2], centroid, bbox, lvl: touched[0] });
+        singles.push({ eid, cx: centroid[0], cy: centroid[1], centroid, bbox, lvl: touched[0] });
       }
     }
 
@@ -603,7 +603,7 @@ class BIMAccessibilityMapper {
       if (lvls.length < 2) continue;
       const cx = grp.reduce((s,c)=>s+c.cx,0)/grp.length;
       const cy = grp.reduce((s,c)=>s+c.cy,0)/grp.length;
-      good.push({ eid: grp[0].eid, centroid:[cx,cy,grp[0].centroid[1]], bbox:grp[0].bbox, levels:lvls });
+      good.push({ eid: grp[0].eid, centroid:[cx,cy,grp[0].centroid[2]], bbox:grp[0].bbox, levels:lvls });
     }
     return good;
   }
@@ -621,12 +621,12 @@ class BIMAccessibilityMapper {
       const sp  = this.ifcApi.GetLine(this.modelID, eid);
       const { centroid, bbox } = this.getElementCentroidAndBbox(eid);
       if (!centroid) continue;
-      // Y-up model: use IFC Y for elevation snap, IFC Z for plan Y
-      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[1]).name;
-      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[1]).elev;
+      // Z-up model: use IFC Z for elevation snap, IFC Y for plan Y
+      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[2]).name;
+      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[2]).elev;
       const id = String(eid);
-      this._addNode(id, { name: this._sv(sp.Name)||'Estancia', type:'Habitacion', level:lvl, x:centroid[0], y:centroid[2], z:fz, accessible:true });
-      const info = { id, bbox, bbox2d:[bbox[0],bbox[2],bbox[3],bbox[5]], level:lvl };
+      this._addNode(id, { name: this._sv(sp.Name)||'Estancia', type:'Habitacion', level:lvl, x:centroid[0], y:centroid[1], z:fz, accessible:true });
+      const info = { id, bbox, bbox2d:[bbox[0],bbox[1],bbox[3],bbox[4]], level:lvl };
       this._spacesData.push(info);
       this._bbox2dBySpace.set(id, info.bbox2d);
     }
@@ -640,14 +640,14 @@ class BIMAccessibilityMapper {
       if (['ROOF','BASESLAB'].includes(this._sv(slab.PredefinedType).toUpperCase())) continue;
       const { centroid, bbox } = this.getElementCentroidAndBbox(eid);
       if (!centroid) continue;
-      // Y-up: horizontal extents are X (0→3) and Z (2→5), not Y (1→4)
-      if (bbox[3]-bbox[0]>10 && bbox[5]-bbox[2]>10) continue;
-      if (this._spacesData.some(s => this._bbox2dContains([centroid[0],centroid[2]], s.bbox2d, 0.1))) continue;
-      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[1]).name;
-      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[1]).elev;
+      // Z-up: horizontal extents are X (0→3) and Y (1→4); Z (2→5) is height
+      if (bbox[3]-bbox[0]>10 && bbox[4]-bbox[1]>10) continue;
+      if (this._spacesData.some(s => this._bbox2dContains([centroid[0],centroid[1]], s.bbox2d, 0.1))) continue;
+      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[2]).name;
+      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[2]).elev;
       const id = String(eid);
-      this._addNode(id, { name:this._sv(slab.Name)||'Suelo/Pasillo', type:'Suelo', level:lvl, x:centroid[0], y:centroid[2], z:fz, accessible:true });
-      const info = { id, bbox, bbox2d:[bbox[0],bbox[2],bbox[3],bbox[5]], level:lvl };
+      this._addNode(id, { name:this._sv(slab.Name)||'Suelo/Pasillo', type:'Suelo', level:lvl, x:centroid[0], y:centroid[1], z:fz, accessible:true });
+      const info = { id, bbox, bbox2d:[bbox[0],bbox[1],bbox[3],bbox[4]], level:lvl };
       this._spacesData.push(info);
       this._bbox2dBySpace.set(id, info.bbox2d);
     }
@@ -660,22 +660,22 @@ class BIMAccessibilityMapper {
       const door = this.ifcApi.GetLine(this.modelID, eid);
       const { centroid, bbox } = this.getElementCentroidAndBbox(eid);
       if (!centroid) continue;
-      // Y-up: use IFC Y for elevation, IFC Z for plan Y
-      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[1]).name;
-      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[1]).elev;
+      // Z-up: use IFC Z for elevation, IFC Y for plan Y
+      const lvl = this._containerOf.get(eid) || this.snapZToLevel(bbox[2]).name;
+      const fz  = this.storeyElevByName[lvl] ?? this.snapZToLevel(bbox[2]).elev;
       const width = this._fv(door.OverallWidth);
       const acc   = width > 0 ? width >= 0.85 : true;
       const { axis, normal } = this._doorFrame(eid);
       const id = String(eid);
-      this._addNode(id, { name:this._sv(door.Name)||'Puerta', type:'Puerta', level:lvl, x:centroid[0], y:centroid[2], z:fz, width, accessible:acc, wallAxis:axis, wallNormal:normal });
+      this._addNode(id, { name:this._sv(door.Name)||'Puerta', type:'Puerta', level:lvl, x:centroid[0], y:centroid[1], z:fz, width, accessible:acc, wallAxis:axis, wallNormal:normal });
       if (!this._doorsByLevel[lvl]) this._doorsByLevel[lvl] = [];
-      this._doorsByLevel[lvl].push({ id, x:centroid[0], y:centroid[2], z:fz });
+      this._doorsByLevel[lvl].push({ id, x:centroid[0], y:centroid[1], z:fz });
 
       const near = [];
       for (const s of this._spacesData) {
         if (s.level !== lvl) continue;
-        if (this._bbox2dContains([centroid[0],centroid[2]], s.bbox2d, 0.65)) near.push([0, s]);
-        else { const d = this._bbox2dDist([centroid[0],centroid[2]], s.bbox2d); if (d<=1.1) near.push([d, s]); }
+        if (this._bbox2dContains([centroid[0],centroid[1]], s.bbox2d, 0.65)) near.push([0, s]);
+        else { const d = this._bbox2dDist([centroid[0],centroid[1]], s.bbox2d); if (d<=1.1) near.push([d, s]); }
       }
       near.sort((a,b)=>a[0]-b[0]);
       for (const [,s] of near.slice(0,2)) this._linkDoorSpace(id, s, acc?1:999999, acc);
@@ -865,10 +865,10 @@ class BIMAccessibilityMapper {
         // Usar Z real de la geometría para mostrar pendiente correcta en 3D
         const fzS=mnZ, fzE=mxZ;
         const idS=`${eid}_START`,idE=`${eid}_END`;
-        this._addNode(idS,{name:'Rampa Inicio',type:'Rampa',level:lvS,x:v[iS][0],y:v[iS][2],z:fzS,accessible:true});
-        this._addNode(idE,{name:'Rampa Fin',  type:'Rampa',level:lvE,x:v[iE][0],y:v[iE][2],z:fzE,accessible:true});
+        this._addNode(idS,{name:'Rampa Inicio',type:'Rampa',level:lvS,x:v[iS][0],y:v[iS][1],z:fzS,accessible:true});
+        this._addNode(idE,{name:'Rampa Fin',  type:'Rampa',level:lvE,x:v[iE][0],y:v[iE][1],z:fzE,accessible:true});
         this._addEdgePolyline(idS,idE,[[v[iS][0],v[iS][1],fzS],[v[iE][0],v[iE][1],fzE]],1.2,true,'rampa');
-        for (const [nid,px,py,lvl] of [[idS,v[iS][0],v[iS][2],lvS],[idE,v[iE][0],v[iE][2],lvE]]) {
+        for (const [nid,px,py,lvl] of [[idS,v[iS][0],v[iS][1],lvS],[idE,v[iE][0],v[iE][1],lvE]]) {
           let lk=false;
           for (const s of this._spacesData) if(s.level===lvl&&this._bbox2dContains([px,py],s.bbox2d,0.4)){this._linkVertSpace(nid,s);lk=true;break;}
           if (!lk){const ds=this._doorsByLevel[lvl]||[];if(ds.length){const nr=ds.reduce((b,d)=>this._d2d([px,py],[d.x,d.y])<this._d2d([px,py],[b.x,b.y])?d:b);if(this._d2d([px,py],[nr.x,nr.y])<=3)this._linkVertDoor(nid,nr.id);}}
