@@ -183,17 +183,22 @@ class BIMAccessibilityMapper {
   // ═══════════════════════════════════════════════════════
   _buildContainerIndex() {
     // ── Método 1: IfcRelContainedInSpatialStructure ───────────────────────
+    // IMPORTANTE: usar recursive=FALSE para que RelatingStructure y
+    // RelatedElements lleguen como {value: expressID} numéricos.
+    // Con recursive=true el objeto ya viene resuelto y .value es undefined,
+    // lo que hace que GetLineType reciba 0 → "Invalid ExpressID".
     try {
       const rels = this.ifcApi.GetLineIDsWithType(
         this.modelID, WebIFC.IFCRELCONTAINEDINSPATIALSTRUCTURE
       );
       for (let i = 0; i < rels.size(); i++) {
-        const rel  = this.ifcApi.GetLine(this.modelID, rels.get(i), true);
+        const rel  = this.ifcApi.GetLine(this.modelID, rels.get(i), false);
         const stId = rel.RelatingStructure?.value ?? rel.RelatingStructure;
+        if (typeof stId !== 'number') continue;
         let stName = null;
         try {
           if (this.ifcApi.GetLineType(this.modelID, stId) === WebIFC.IFCBUILDINGSTOREY) {
-            const st = this.ifcApi.GetLine(this.modelID, stId);
+            const st = this.ifcApi.GetLine(this.modelID, stId, false);
             stName = this._sv(st.Name) || 'Nivel Desconocido';
           }
         } catch (_) {}
@@ -201,22 +206,22 @@ class BIMAccessibilityMapper {
         const items = rel.RelatedElements;
         for (const item of (Array.isArray(items) ? items : [items])) {
           const eid = item?.value ?? item;
-          if (eid != null) this._containerOf.set(eid, stName);
+          if (typeof eid === 'number') this._containerOf.set(eid, stName);
         }
       }
     } catch (_) {}
 
-    // ── Método 2: IfcRelAggregates (algunos modelos usan esto en lugar de ─
-    //             IfcRelContainedInSpatialStructure para espacios y puertas)
+    // ── Método 2: IfcRelAggregates ────────────────────────────────────────
     try {
       const rels = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCRELAGGREGATES);
       for (let i = 0; i < rels.size(); i++) {
-        const rel = this.ifcApi.GetLine(this.modelID, rels.get(i), true);
+        const rel = this.ifcApi.GetLine(this.modelID, rels.get(i), false);
         const stId = rel.RelatingObject?.value ?? rel.RelatingObject;
+        if (typeof stId !== 'number') continue;
         let stName = null;
         try {
           if (this.ifcApi.GetLineType(this.modelID, stId) === WebIFC.IFCBUILDINGSTOREY) {
-            const st = this.ifcApi.GetLine(this.modelID, stId);
+            const st = this.ifcApi.GetLine(this.modelID, stId, false);
             stName = this._sv(st.Name) || 'Nivel Desconocido';
           }
         } catch (_) {}
@@ -224,8 +229,7 @@ class BIMAccessibilityMapper {
         const items = rel.RelatedObjects;
         for (const item of (Array.isArray(items) ? items : [items])) {
           const eid = item?.value ?? item;
-          // No sobreescribir mapeos del método 1
-          if (eid != null && !this._containerOf.has(eid))
+          if (typeof eid === 'number' && !this._containerOf.has(eid))
             this._containerOf.set(eid, stName);
         }
       }
