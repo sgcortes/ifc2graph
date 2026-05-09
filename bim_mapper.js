@@ -677,99 +677,166 @@ class BIMAccessibilityMapper {
     // 4) STAIRS
     prog('Escaleras…', 50);
     const flightInfo = {}, processed = new Set();
+
+    // ── Pre-paso: asignar niveles a cada tramo usando IfcRelAggregates ──────
+    // Cuando la geometría llega en coordenadas locales (Z siempre 0→h sin
+    // offset de planta), no podemos usar snapZToLevel(minZ) directamente.
+    // Agrupamos los tramos por su IfcStair padre, determinamos el nivel de
+    // inicio del eje de escaleras y asignamos niveles consecutivos a cada
+    // tramo (ordenados por su Z de geometría relativa).
+    // IMPORTANTE: usar GetLine(false) para obtener expressIDs numéricos.
+    const flightLvlMap = {};   // eid → { lvlS, lvlE }
+    try {
+      const aggIds = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCRELAGGREGATES);
+      for (let ai = 0; ai < aggIds.size(); ai++) {
+        const rel = this.ifcApi.GetLine(this.modelID, aggIds.get(ai), false);
+        const stairId = rel.RelatingObject?.value ?? rel.RelatingObject;
+        if (typeof stairId !== 'number') continue;
+        let isStair = false;
+        try { isStair = this.ifcApi.GetLineType(this.modelID, stairId) === WebIFC.IFCSTAIR; } catch(_) {}
+        if (!isStair) continue;
+
+        const items = rel.RelatedObjects;
+        const flightEids = [];
+        for (const item of (Array.isArray(items) ? items : [items])) {
+          const oid = item?.value ?? item;
+          if (typeof oid === 'number') flightEids.push(oid);
+        }
+        if (!flightEids.length) continue;
+
+        // Nivel de inicio del eje de escaleras: buscar en _containerOf al IfcStair
+        // primero, luego a cualquiera de sus tramos
+        let startLevel = this._containerOf.get(stairId);
+        if (!startLevel) {
+          for (const eid of flightEids) {
+            startLevel = this._containerOf.get(eid);
+            if (startLevel) break;
+          }
+        }
+        if (!startLevel) startLevel = this._sortedStoreys[0]?.name;
+
+        const baseIdx = Math.max(0, this._sortedStoreys.findIndex(s => s.name === startLevel));
+
+        // Ordenar tramos por su minZ de geometría (relativo al tramo): aporta orden correcto
+        const withZ = flightEids.map(eid => {
+          const vv = this.getElementVertices(eid);
+          return { eid, minZ: vv.length ? Math.min(...vv.map(p => p[2])) : 0 };
+        });
+        withZ.sort((a, b) => a.minZ - b.minZ);
+
+        withZ.forEach(({ eid }, idx) => {
+          const sIdx = Math.min(baseIdx + idx,     this._sortedStoreys.length - 1);
+          const eIdx = Math.min(baseIdx + idx + 1, this._sortedStoreys.length - 1);
+          flightLvlMap[eid] = {
+            lvlS: this._sortedStoreys[sIdx].name,
+            lvlE: this._sortedStoreys[eIdx].name,
+          };
+        });
+      }
+    } catch (_) {}
+
+    // ── Bucle principal de tramos ────────────────────────────────────────────
     const stIds = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCSTAIRFLIGHT);
     for (let i = 0; i < stIds.size(); i++) {
       const eid = stIds.get(i);
       if (processed.has(eid)) continue;
       const v = this.getElementVertices(eid);
       if (!v.length) continue;
-      const zs   = v.map(p => p[2]);
-      const minZ = Math.min(...zs), maxZ = Math.max(...zs);
-      const tolZ = Math.max((maxZ-minZ)*0.15, 0.1);
-      const bot  = v.filter(p => p[2] <= minZ+tolZ);
-      const top  = v.filter(p => p[2] >= maxZ-tolZ);
-      const cxS  = bot.length ? bot.reduce((s,p)=>s+p[0],0)/bot.length : v[zs.indexOf(minZ)][0];
-      const cyS  = bot.length ? bot.reduce((s,p)=>s+p[1],0)/bot.length : v[zs.indexOf(minZ)][1];
-      const cxE  = top.length ? top.reduce((s,p)=>s+p[0],0)/top.length : v[zs.indexOf(maxZ)][0];
-      const cyE  = top.length ? top.reduce((s,p)=>s+p[1],0)/top.length : v[zs.indexOf(maxZ)][1];
 
-      // Determinar pisos de inicio y fin
-      let { name:lvlS } = this.snapZToLevel(minZ);
-      let { name:lvlE } = this.snapZToLevel(maxZ);
-
-      // Si la geometría extraída es demasiado plana (fallo de extracción),
-      // el tramo conecta el piso contenedor con el siguiente piso de la jerarquía
+      const zs       = v.map(p => p[2]);
+      const minZ     = Math.min(...zs), maxZ = Math.max(...zs);
       const geomHeight = maxZ - minZ;
-      if (geomHeight < 0.5 || lvlS === lvlE) {
-        const contained = this._containerOf.get(eid);
-        if (contained) lvlS = contained;
+
+      // Centroide XY de todo el tramo (no dividido por altura)
+      const cx = v.reduce((s, p) => s + p[0], 0) / v.length;
+      const cy = v.reduce((s, p) => s + p[1], 0) / v.length;
+
+      // Asignación de niveles: mapa pre-calculado → _containerOf → snapZToLevel
+      let lvlS, lvlE;
+      if (flightLvlMap[eid]) {
+        ({ lvlS, lvlE } = flightLvlMap[eid]);
+      } else {
+        lvlS = this._containerOf.get(eid) || this.snapZToLevel(minZ).name;
         const sIdx = this._sortedStoreys.findIndex(s => s.name === lvlS);
-        if (sIdx >= 0 && sIdx + 1 < this._sortedStoreys.length)
-          lvlE = this._sortedStoreys[sIdx + 1].name;
+        if (geomHeight >= 0.5) {
+          const byZ = this.snapZToLevel(maxZ).name;
+          lvlE = (byZ !== lvlS) ? byZ
+            : (sIdx + 1 < this._sortedStoreys.length ? this._sortedStoreys[sIdx + 1].name : lvlS);
+        } else {
+          lvlE = sIdx + 1 < this._sortedStoreys.length
+            ? this._sortedStoreys[sIdx + 1].name : lvlS;
+        }
       }
 
-      // Usar la Z real de la geometría para la posición 3D (no la cota del piso)
-      // para que la escalera muestre correctamente la pendiente en el grafo 3D.
-      // Si la altura es degenerada, usar las cotas de los pisos detectados.
-      const fzS = geomHeight >= 0.5 ? minZ : (this.storeyElevByName[lvlS] ?? minZ);
-      const fzE = geomHeight >= 0.5 ? maxZ : (this.storeyElevByName[lvlE] ?? fzS + 3);
+      // Posición Z: siempre desde storeyElevByName → conexiones limpias en 3D
+      const fzS = this.storeyElevByName[lvlS] ?? minZ;
+      const fzE = this.storeyElevByName[lvlE] ?? (fzS + 3.5);
 
       const idS = `${eid}_START`, idE = `${eid}_END`;
-      this._addNode(idS, { name:'Escalera Inicio', type:'Escalera', level:lvlS, x:cxS, y:cyS, z:fzS, accessible:false });
-      this._addNode(idE, { name:'Escalera Fin',   type:'Escalera', level:lvlE, x:cxE, y:cyE, z:fzE, accessible:false });
-      this._addEdgePolyline(idS, idE, [[cxS,cyS,fzS],[cxE,cyE,fzE]], 999999, false, 'escalera');
-      flightInfo[eid] = { startId:idS, endId:idE, startZ:minZ };
-      for (const [nid,cx,cy,lvl] of [[idS,cxS,cyS,lvlS],[idE,cxE,cyE,lvlE]]) {
+      this._addNode(idS, { name:'Escalera Inicio', type:'Escalera', level:lvlS, x:cx, y:cy, z:fzS, accessible:false });
+      this._addNode(idE, { name:'Escalera Fin',   type:'Escalera', level:lvlE, x:cx, y:cy, z:fzE, accessible:false });
+      this._addEdgePolyline(idS, idE, [[cx,cy,fzS],[cx,cy,fzE]], 999999, false, 'escalera');
+      flightInfo[eid] = { startId:idS, endId:idE, startZ:fzS };
+
+      for (const [nid, px, py, lvl] of [[idS,cx,cy,lvlS],[idE,cx,cy,lvlE]]) {
         let linked = false;
+        const fz = this.storeyElevByName[lvl] ?? 0;
         for (const s of this._spacesData) {
-          if (s.level===lvl && this._checkProx([cx,cy,this.storeyElevByName[lvl]],s.bbox,0.35)) {
-            this._linkVertSpace(nid, s); linked=true; break;
+          if (s.level === lvl && this._checkProx([px, py, fz], s.bbox, 0.5)) {
+            this._linkVertSpace(nid, s); linked = true; break;
           }
         }
         if (!linked) {
-          const doors = this._doorsByLevel[lvl]||[];
+          const doors = this._doorsByLevel[lvl] || [];
           if (doors.length) {
-            const near = doors.reduce((b,d) => this._d2d([cx,cy],[d.x,d.y])<this._d2d([cx,cy],[b.x,b.y])?d:b);
-            if (this._d2d([cx,cy],[near.x,near.y]) <= 3) this._linkVertDoor(nid, near.id);
+            const near = doors.reduce((b, d) =>
+              this._d2d([px,py],[d.x,d.y]) < this._d2d([px,py],[b.x,b.y]) ? d : b);
+            if (this._d2d([px,py],[near.x,near.y]) <= 5) this._linkVertDoor(nid, near.id);
           }
         }
       }
       processed.add(eid);
     }
 
-    // Connect consecutive flights
+    // ── Conectar tramos consecutivos (fix: GetLine(false)) ───────────────────
     const byStair = {};
     try {
       const aggIds = this.ifcApi.GetLineIDsWithType(this.modelID, WebIFC.IFCRELAGGREGATES);
       for (let i = 0; i < aggIds.size(); i++) {
-        const rel = this.ifcApi.GetLine(this.modelID, aggIds.get(i), true);
+        const rel = this.ifcApi.GetLine(this.modelID, aggIds.get(i), false);  // ← false!
         const rid = rel.RelatingObject?.value ?? rel.RelatingObject;
-        try { if (this.ifcApi.GetLineType(this.modelID,rid) !== WebIFC.IFCSTAIR) continue; } catch(_){continue;}
+        if (typeof rid !== 'number') continue;
+        let isStair = false;
+        try { isStair = this.ifcApi.GetLineType(this.modelID, rid) === WebIFC.IFCSTAIR; } catch(_) {}
+        if (!isStair) continue;
         for (const obj of (Array.isArray(rel.RelatedObjects)?rel.RelatedObjects:[rel.RelatedObjects])) {
           const oid = obj?.value ?? obj;
-          if (flightInfo[oid]) { if (!byStair[rid]) byStair[rid]=[]; byStair[rid].push(oid); }
+          if (typeof oid === 'number' && flightInfo[oid]) {
+            if (!byStair[rid]) byStair[rid] = [];
+            byStair[rid].push(oid);
+          }
         }
       }
     } catch (_) {}
     for (const flights of Object.values(byStair)) {
-      flights.sort((a,b) => flightInfo[a].startZ - flightInfo[b].startZ);
-      for (let i = 0; i < flights.length-1; i++) {
+      flights.sort((a, b) => flightInfo[a].startZ - flightInfo[b].startZ);
+      for (let i = 0; i < flights.length - 1; i++) {
         const fi = flightInfo[flights[i]], fj = flightInfo[flights[i+1]];
         if (!this._hasEdge(fi.endId, fj.startId)) {
           const na = this.G.nodes.get(fi.endId), nb = this.G.nodes.get(fj.startId);
           this._addEdgePolyline(fi.endId, fj.startId,
             [[na.x,na.y,na.z],[nb.x,nb.y,nb.z]],
-            Math.max(Math.hypot(na.x-nb.x,na.y-nb.y)*1.2,0.5), false, 'escalera_rellano');
+            Math.max(Math.hypot(na.x-nb.x,na.y-nb.y)*1.2, 0.5), false, 'escalera_rellano');
         }
       }
     }
-    // Geometric fallback
-    const sn = [...this.G.nodes.entries()].filter(([,d])=>d.type==='Escalera');
-    for (let i=0;i<sn.length;i++) for (let j=i+1;j<sn.length;j++) {
-      const [aId,a]=sn[i],[bId,b]=sn[j];
-      if (this._hasEdge(aId,bId)||a.level===b.level) continue;
-      const dxy=Math.hypot(a.x-b.x,a.y-b.y), dz=Math.abs(a.z-b.z);
-      if (dxy<=2.5 && 0.5<=dz && dz<=6)
+    // Fallback geométrico (para tramos no agrupados en IfcStair)
+    const sn = [...this.G.nodes.entries()].filter(([,d]) => d.type === 'Escalera');
+    for (let i = 0; i < sn.length; i++) for (let j = i+1; j < sn.length; j++) {
+      const [aId,a] = sn[i], [bId,b] = sn[j];
+      if (this._hasEdge(aId,bId) || a.level === b.level) continue;
+      const dxy = Math.hypot(a.x-b.x, a.y-b.y), dz = Math.abs(a.z-b.z);
+      if (dxy <= 3.0 && 0.3 <= dz && dz <= 8)
         this._addEdgePolyline(aId,bId,[[a.x,a.y,a.z],[b.x,b.y,b.z]],Math.max(dxy*1.2,0.5),false,'escalera_rellano');
     }
 
