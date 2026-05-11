@@ -754,13 +754,17 @@ class BIMAccessibilityMapper {
       const minZ     = Math.min(...zs), maxZ = Math.max(...zs);
       const geomHeight = maxZ - minZ;
 
-      // Centroide XY: usar solo vértices del 25% inferior (base del tramo)
-      // para evitar que barandas/alzadas desplacen el centroide en XY.
-      const zCut = minZ + Math.max(geomHeight * 0.25, 0.30);
-      const lowV = v.filter(p => p[2] <= zCut);
-      const useV = lowV.length >= 3 ? lowV : v;
-      const cx = useV.reduce((s, p) => s + p[0], 0) / useV.length;
-      const cy = useV.reduce((s, p) => s + p[1], 0) / useV.length;
+      // Posición XY: centroide de la franja inferior (inicio) y superior (fin).
+      // Refleja la posición geométrica real de entrada/salida del tramo.
+      const zBand = Math.max(geomHeight * 0.10, 0.15);
+      const botV  = v.filter(p => p[2] <= minZ + zBand);
+      const topV  = v.filter(p => p[2] >= maxZ - zBand);
+      const bV    = botV.length >= 1 ? botV : [v[zs.indexOf(minZ)]];
+      const tV    = topV.length >= 1 ? topV : [v[zs.indexOf(maxZ)]];
+      const cxS   = bV.reduce((s, p) => s + p[0], 0) / bV.length;
+      const cyS   = bV.reduce((s, p) => s + p[1], 0) / bV.length;
+      const cxE   = tV.reduce((s, p) => s + p[0], 0) / tV.length;
+      const cyE   = tV.reduce((s, p) => s + p[1], 0) / tV.length;
 
       // Asignación de niveles: mapa pre-calculado → _containerOf → snapZToLevel
       let lvlS, lvlE;
@@ -784,12 +788,12 @@ class BIMAccessibilityMapper {
       const fzE = this.storeyElevByName[lvlE] ?? (fzS + 3.5);
 
       const idS = `${eid}_START`, idE = `${eid}_END`;
-      this._addNode(idS, { name:'Escalera Inicio', type:'Escalera', level:lvlS, x:cx, y:cy, z:fzS, accessible:false });
-      this._addNode(idE, { name:'Escalera Fin',   type:'Escalera', level:lvlE, x:cx, y:cy, z:fzE, accessible:false });
-      this._addEdgePolyline(idS, idE, [[cx,cy,fzS],[cx,cy,fzE]], 999999, false, 'escalera');
+      this._addNode(idS, { name:'Escalera Inicio', type:'Escalera', level:lvlS, x:cxS, y:cyS, z:fzS, accessible:false });
+      this._addNode(idE, { name:'Escalera Fin',   type:'Escalera', level:lvlE, x:cxE, y:cyE, z:fzE, accessible:false });
+      this._addEdgePolyline(idS, idE, [[cxS,cyS,fzS],[cxE,cyE,fzE]], 999999, false, 'escalera');
       flightInfo[eid] = { startId:idS, endId:idE, startZ:fzS };
 
-      for (const [nid, px, py, lvl] of [[idS,cx,cy,lvlS],[idE,cx,cy,lvlE]]) {
+      for (const [nid, px, py, lvl] of [[idS,cxS,cyS,lvlS],[idE,cxE,cyE,lvlE]]) {
         let linked = false;
         for (const s of this._spacesData) {
           if (s.level === lvl && this._bbox2dContains([px, py], s.bbox2d, 0.5)) {
