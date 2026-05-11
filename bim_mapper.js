@@ -844,11 +844,17 @@ class BIMAccessibilityMapper {
         }
       }
     }
-    // Fallback geométrico (para tramos no agrupados en IfcStair)
+    // Fallback geométrico: solo tramos NO conectados por IfcRelAggregates
+    // y únicamente entre NIVELES ADYACENTES (índice ±1). Conectar plantas
+    // no consecutivas genera aristas cruzadas y sobrecarga el grafo.
     const sn = [...this.G.nodes.entries()].filter(([,d]) => d.type === 'Escalera');
     for (let i = 0; i < sn.length; i++) for (let j = i+1; j < sn.length; j++) {
       const [aId,a] = sn[i], [bId,b] = sn[j];
       if (this._hasEdge(aId,bId) || a.level === b.level) continue;
+      // Solo niveles consecutivos (adyacentes en _sortedStoreys)
+      const iA = this._sortedStoreys.findIndex(s => s.name === a.level);
+      const iB = this._sortedStoreys.findIndex(s => s.name === b.level);
+      if (iA < 0 || iB < 0 || Math.abs(iA - iB) !== 1) continue;
       const dxy = Math.hypot(a.x-b.x, a.y-b.y), dz = Math.abs(a.z-b.z);
       if (dxy <= 3.0 && 0.3 <= dz && dz <= 8)
         this._addEdgePolyline(aId,bId,[[a.x,a.y,a.z],[b.x,b.y,b.z]],Math.max(dxy*1.2,0.5),false,'escalera_rellano');
