@@ -20,6 +20,9 @@ Emblema*.png
 MODELOS/
 GRAFOS/
 webapp/
+.qa/
+.pnpm-store/
+.publish/
 
 # Claude Code (configuración local del agente)
 .claude/
@@ -44,3 +47,6 @@ Thumbs.db
 
 # Logs
 *.log
+HSIMG_*_graph.graphml
+HSIMG_*_graph.json
+HSIMG_*_validation_report.csv
